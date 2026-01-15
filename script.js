@@ -1,6 +1,6 @@
 /**
  * Maze Solver AI
- * Implements Recursive Backtracker for generation and BFS for pathfinding.
+ * Implements Recursive Backtracker for generation and BFS/A* for pathfinding.
  */
 
 const canvas = document.getElementById('mazeCanvas');
@@ -13,19 +13,17 @@ const stepsCount = document.getElementById('steps-count');
 
 const speedRange = document.getElementById('speed-range');
 const sizeRange = document.getElementById('size-range');
+const algoSelect = document.getElementById('algo-select');
 
 // Configuration
 let COLS = 25;
 let ROWS = 25;
 let CELL_SIZE; // Calculated dynamically
 let ANIMATION_SPEED_GEN = 1;
-let ANIMATION_SPEED_SOLVE = 1;
-let SPEED_MULTIPLIER = 1; // Controlled by slider
 
 // Colors
 const COLOR_BG = '#0B0E14';
-const COLOR_WALL = '#161B22'; // Not used directly, walls are lines
-const COLOR_WALL_LINE = '#1F2933'; // Dark grey
+const COLOR_WALL = '#161B22';
 const COLOR_CELL_BG = '#0B0E14';
 const COLOR_VISITED_GEN = 'rgba(112, 0, 255, 0.1)';
 const COLOR_HEAD_GEN = '#7000FF'; // Purple
@@ -34,6 +32,7 @@ const COLOR_HEAD_SOLVE = '#00F0FF'; // Cyan
 const COLOR_PATH = '#39FF14'; // Neon Green
 const COLOR_START = '#00F0FF'; // Green-ish Cyan
 const COLOR_END = '#FF0055'; // Red-ish Pink
+const COLOR_OPEN_SET = 'rgba(0, 255, 100, 0.2)'; // Greenish frontier for A*
 
 // State
 let grid = [];
@@ -53,7 +52,10 @@ class Cell {
         this.j = j;
         this.walls = [true, true, true, true]; // Top, Right, Bottom, Left
         this.visited = false; // For generation
-        this.searched = false; // For solving
+        this.searched = false; // For solving (Closed Set in A*)
+        this.f = 0; // A* Total cost
+        this.g = 0; // A* Cost from start
+        this.h = 0; // A* Heuristic to end
     }
 
     // Check neighbors for generation (Grid based)
@@ -104,9 +106,6 @@ class Cell {
             ctx.fillRect(x, y, CELL_SIZE, CELL_SIZE);
         }
 
-        // Debug: Visualize Generation Visited
-        // if (this.visited) { ctx.fillStyle = COLOR_VISITED_GEN; ctx.fillRect(x, y, CELL_SIZE, CELL_SIZE); }
-
         ctx.strokeStyle = '#2d3845'; // Slightly lighter than background
         ctx.lineWidth = 2;
         ctx.lineCap = 'round';
@@ -147,9 +146,7 @@ function removeWalls(a, b) {
 
 function resizeCanvas() {
     // Make canvas responsive to container width
-    // We want a square canvas that fits
-    const containerWidth = document.getElementById('app-container').clientWidth - 64; // roughly padding
-    // Limit max size
+    const containerWidth = document.getElementById('app-container').clientWidth - 64;
     const size = Math.min(containerWidth, 500);
 
     canvas.width = size;
@@ -162,13 +159,6 @@ function resizeCanvas() {
     if (grid.length > 0) {
         drawGrid();
         if (!isGenerating && !isSolving) drawStartEnd();
-
-        // Re-draw solved path if exists
-        if (canvas.classList.contains('solved') && solvedPath.length > 0) {
-            // Re-drawing path requires logic or just clearing; 
-            // simpler to just let user re-solve if they resize massively
-            // but we can try to redraw the grid state.
-        }
     }
 }
 
@@ -193,8 +183,6 @@ function setup() {
     // Initial UI State
     statusText.innerText = 'Ready';
     steps = 0;
-
-    // Only update stepsCount if it exists (it was missing from my previous file snippet, assuming safety)
     if (stepsCount) stepsCount.innerText = steps;
 
     btnSolve.disabled = true;
@@ -217,6 +205,7 @@ function startGeneration() {
     isGenerating = true;
     btnGenerate.disabled = true;
     btnSolve.disabled = true;
+    sizeRange.disabled = true;
     statusText.innerText = 'Generating Maze...';
 
     current = grid[0];
@@ -229,19 +218,12 @@ function startGeneration() {
 function animateGeneration() {
     if (!isGenerating) return;
 
-    // Calculate loops per frame based on speed
-    // Slider 1-10. 
-    // 1-3: Slow (1 step per frame or skip frames)
-    // 4-7: Normal (1-2 steps per frame)
-    // 8-10: Fast (multiple steps)
-
     let speedVal = parseInt(speedRange.value);
     let loops = 1;
 
     if (speedVal > 7) loops = (speedVal - 6) * 2; // 8->4, 10->8
     else if (speedVal < 4) {
-        // Slow down by skipping frames? 
-        // Simple hack: Random skip
+        // Slow down randomly
         if (Math.random() > (speedVal * 0.3)) {
             animationFrameId = requestAnimationFrame(animateGeneration);
             return;
@@ -263,6 +245,7 @@ function animateGeneration() {
             isGenerating = false;
             btnGenerate.disabled = false;
             btnSolve.disabled = false;
+            sizeRange.disabled = false;
             statusText.innerText = 'Maze Generated';
             drawGrid(); // Final clean draw
             drawStartEnd();
@@ -272,90 +255,153 @@ function animateGeneration() {
 
     // Draw Update
     drawGrid();
-
-    // Highlight current head
     current.drawHighlight(COLOR_HEAD_GEN);
 
     animationFrameId = requestAnimationFrame(animateGeneration);
 }
 
 function drawStartEnd() {
-    // Start (Top Left)
     grid[0].drawHighlight(COLOR_START);
-    // End (Bottom Right)
     grid[grid.length - 1].drawHighlight(COLOR_END);
 }
 
 
-// --- BFS Solver --- //
+// --- Pathfinding Solver (BFS & A*) --- //
 
 function startSolving() {
     if (isGenerating || isSolving) return;
     isSolving = true;
     btnGenerate.disabled = true;
     btnSolve.disabled = true;
-    statusText.innerText = 'Solving (BFS)...';
+    sizeRange.disabled = true;
+
+    let algo = algoSelect.value;
+    statusText.innerText = `Solving (${algo === 'astar' ? 'A* AI' : 'BFS'})...`;
     steps = 0;
 
     // Reset search state
     for (let cell of grid) {
         cell.searched = false;
+        cell.f = 0;
+        cell.g = 0;
+        cell.h = 0;
     }
 
     let start = grid[0];
     let end = grid[grid.length - 1];
 
+    // Initialize standard queue/set for BFS/A*
     solverQueue = [start];
     solverCameFrom = new Map();
-    solverCameFrom.set(start, null);
-    start.searched = true;
+    // solverCameFrom.set(start, null); 
 
-    animateSolver();
+    start.searched = true; // "In open set" effectively
+    start.g = 0;
+    start.h = heuristic(start, end);
+    start.f = start.g + start.h;
+
+    animateSolver(algo, end);
 }
 
-function animateSolver() {
+function heuristic(a, b) {
+    // Manhattan distance
+    return Math.abs(a.i - b.i) + Math.abs(a.j - b.j);
+}
+
+function animateSolver(algo, end) {
     if (!isSolving) return;
 
-    // BFS Step
-    let found = false;
-    let currentSearch = null;
-
     let speedVal = parseInt(speedRange.value);
-    let loops = 1;
-    if (speedVal > 7) loops = (speedVal - 6) * 3;
-    else if (speedVal < 4) {
-        if (Math.random() > (speedVal * 0.3)) {
-            animationFrameId = requestAnimationFrame(animateSolver);
+
+    // Logic for steps per frame vs frames per step
+    // Low speed: Wait X frames before 1 step
+    // High speed: Do X steps per 1 frame
+
+    let stepsPerFrame = 1;
+
+    // VERY REALISTIC SLOW MODE for speeds 1-5
+    if (speedVal <= 5) {
+        // Use a counter attached to the function scope or external?
+        // simple timestamp check
+        if (!this.lastTime) this.lastTime = Date.now();
+        let now = Date.now();
+        let delay = (6 - speedVal) * 50; // 50ms to 250ms delay
+
+        if (now - this.lastTime < delay) {
+            animationFrameId = requestAnimationFrame(() => animateSolver(algo, end));
             return;
         }
+        this.lastTime = now;
+    } else {
+        // Fast
+        stepsPerFrame = Math.max(1, (speedVal - 5) * 2);
     }
 
-    // Multiple steps per frame for speed
-    for (let k = 0; k < loops; k++) {
+
+    for (let k = 0; k < stepsPerFrame; k++) {
         if (solverQueue.length > 0) {
-            currentSearch = solverQueue.shift();
+
+            let currentSearch;
+
+            if (algo === 'astar') {
+                // Find lowest F
+                let winner = 0;
+                for (let i = 0; i < solverQueue.length; i++) {
+                    if (solverQueue[i].f < solverQueue[winner].f) {
+                        winner = i;
+                    }
+                }
+                currentSearch = solverQueue[winner];
+
+                // End condition
+                if (currentSearch === end) {
+                    reconstructPath();
+                    return;
+                }
+
+                // Remove from OpenSet
+                solverQueue.splice(winner, 1);
+                currentSearch.searched = true; // Closed Set visualization
+
+            } else {
+                // BFS
+                currentSearch = solverQueue.shift();
+                if (currentSearch === end) {
+                    reconstructPath();
+                    return;
+                }
+            }
+
             steps++;
             stepsCount.innerText = steps;
 
-            if (currentSearch === grid[grid.length - 1]) {
-                found = true;
-                break;
-            }
-
             let neighbors = currentSearch.getAccessibleNeighbors();
             for (let neighbor of neighbors) {
-                if (!neighbor.searched) {
-                    neighbor.searched = true;
-                    solverCameFrom.set(neighbor, currentSearch);
-                    solverQueue.push(neighbor);
+                if (algo === 'astar') {
+                    // A* Logic
+                    if (!neighbor.searched && !solverQueue.includes(neighbor)) {
+                        solverCameFrom.set(neighbor, currentSearch);
+                        neighbor.g = currentSearch.g + 1;
+                        neighbor.h = heuristic(neighbor, end);
+                        neighbor.f = neighbor.g + neighbor.h;
+                        solverQueue.push(neighbor);
+                    }
+                } else {
+                    // BFS Logic
+                    if (!neighbor.searched) {
+                        neighbor.searched = true;
+                        solverCameFrom.set(neighbor, currentSearch);
+                        solverQueue.push(neighbor);
+                    }
                 }
             }
         } else {
-            // No solution (shouldn't happen in perfect maze)
+            // No solution
             isSolving = false;
             statusText.innerText = 'No Path Found';
             btnGenerate.disabled = false;
             btnReset.disabled = false;
+            sizeRange.disabled = false;
             return;
         }
     }
@@ -364,44 +410,42 @@ function animateSolver() {
     drawGrid();
     drawStartEnd();
 
-    // Draw all searched cells
-    // Optimization: Don't redraw everything, just draw overlay? 
-    // For simplicity, we redraw grid then overlay.
-    // Ideally we'd maintain an image buffer but this is small enough.
-
-    // Draw visited set for visualization
+    // Draw Searched (Closed Set)
     for (let cell of grid) {
         if (cell.searched) {
             cell.drawHighlight(COLOR_VISITED_SOLVE);
         }
     }
 
-    if (currentSearch) {
-        currentSearch.drawHighlight(COLOR_HEAD_SOLVE);
+    // For A*: Draw Open Set (Frontier)
+    if (algo === 'astar') {
+        for (let cell of solverQueue) {
+            cell.drawHighlight(COLOR_OPEN_SET);
+        }
     }
 
-    if (found) {
-        reconstructPath();
-        return;
+    // Highlight Head
+    if (solverQueue.length > 0 && algo !== 'astar') { // BFS head is just last popped? No, last added? 
+        // BFS visualizes frontier naturally
     }
 
-    animationFrameId = requestAnimationFrame(animateSolver);
+    animationFrameId = requestAnimationFrame(() => animateSolver(algo, end));
 }
 
 function reconstructPath() {
     let end = grid[grid.length - 1];
     let path = [];
     let curr = end;
-    while (curr !== null) {
+    while (curr !== null && curr !== undefined) {
         path.push(curr);
         curr = solverCameFrom.get(curr);
     }
     path.reverse();
-    solvedPath = path; // Store for potential redraws
+    solvedPath = path;
 
     // Animate Path Drawing
     let pathIndex = 0;
-    let speedVal = parseInt(speedRange.value); // Read speed for path animation
+    let speedVal = parseInt(speedRange.value);
 
     function animatePath() {
         if (pathIndex >= path.length) {
@@ -409,13 +453,13 @@ function reconstructPath() {
             statusText.innerText = `Solved! Path Length: ${path.length}`;
             canvas.classList.add('solved');
             btnGenerate.disabled = false;
-            btnSolve.disabled = true; // Already solved
+            btnSolve.disabled = true;
+            sizeRange.disabled = false;
 
-            // Draw arrowhead at the end
+            // Arrowhead
             let endCell = path[path.length - 1];
             let prevCell = path[path.length - 2];
             if (endCell && prevCell) {
-                // simple direction check
                 let cx = endCell.i * CELL_SIZE + CELL_SIZE / 2;
                 let cy = endCell.j * CELL_SIZE + CELL_SIZE / 2;
                 ctx.fillStyle = COLOR_PATH;
@@ -427,38 +471,34 @@ function reconstructPath() {
         }
 
         let cell = path[pathIndex];
-        // cell.drawHighlight(COLOR_PATH); // Removed full block highlight for clearer path
-
-        // Use a smaller glow for the path node
         let x = cell.i * CELL_SIZE;
         let y = cell.j * CELL_SIZE;
-        ctx.fillStyle = 'rgba(57, 255, 20, 0.2)'; // Faint green glow
+        ctx.fillStyle = 'rgba(57, 255, 20, 0.2)';
         ctx.fillRect(x, y, CELL_SIZE, CELL_SIZE);
 
-        // Connect lines visually (center to center)
         if (pathIndex > 0) {
             let prev = path[pathIndex - 1];
             ctx.beginPath();
             ctx.strokeStyle = COLOR_PATH;
-            ctx.lineWidth = CELL_SIZE / 4; // Thicker line
+            ctx.lineWidth = CELL_SIZE / 4;
             ctx.lineCap = 'round';
             ctx.moveTo(prev.i * CELL_SIZE + CELL_SIZE / 2, prev.j * CELL_SIZE + CELL_SIZE / 2);
             ctx.lineTo(cell.i * CELL_SIZE + CELL_SIZE / 2, cell.j * CELL_SIZE + CELL_SIZE / 2);
             ctx.stroke();
 
-            // Draw a small dot at the joint to make it smooth
             ctx.fillStyle = COLOR_PATH;
             ctx.beginPath();
             ctx.arc(cell.i * CELL_SIZE + CELL_SIZE / 2, cell.j * CELL_SIZE + CELL_SIZE / 2, CELL_SIZE / 8, 0, Math.PI * 2);
             ctx.fill();
         }
 
-        if (speedVal < 10) {
-            // Constant drawing usually, but for path let's keep it smooth
-        }
-
         pathIndex++;
-        requestAnimationFrame(animatePath);
+        // Very fast path drawing unless speed is super low
+        if (speedVal < 3) requestAnimationFrame(animatePath);
+        else {
+            if (pathIndex < path.length) animatePath(); // Instant draw for fast speeds
+            else requestAnimationFrame(animatePath);
+        }
     }
 
     animatePath();
@@ -473,30 +513,26 @@ btnReset.addEventListener('click', () => {
     isGenerating = false;
     isSolving = false;
     btnGenerate.disabled = false;
-    setup(); // Will use current slider value
+    sizeRange.disabled = false;
+    setup();
 });
 
-// Update grid on size change (only if not running)
 sizeRange.addEventListener('input', () => {
     if (!isGenerating && !isSolving) {
         setup();
     }
 });
 
-// Window Resize
 window.addEventListener('resize', () => {
-    // Debounce slightly
     clearTimeout(window.resizeTimer);
     window.resizeTimer = setTimeout(() => {
         if (!isGenerating && !isSolving) {
-            setup(); // Full reset on resize to be safe
+            setup();
         } else {
-            // Just resize canvas and redraw grid pixels
             resizeCanvas();
         }
     }, 100);
 });
-
 
 // Init
 setup();
