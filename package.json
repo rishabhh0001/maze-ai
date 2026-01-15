@@ -1,0 +1,17 @@
+{
+    "name": "maze-solver-ai",
+    "version": "1.0.0",
+    "description": "AI-powered maze solving with pathfinding visualization",
+    "scripts": {
+        "dev": "vite",
+        "start": "vite",
+        "build": "vite build",
+        "preview": "vite preview"
+    },
+    "keywords": [],
+    "author": "",
+    "license": "ISC",
+    "devDependencies": {
+        "vite": "^5.0.0"
+    }
+}
