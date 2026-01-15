@@ -324,15 +324,16 @@ function animateSolver(algo, end) {
     if (speedVal <= 5) {
         // Use a counter attached to the function scope or external?
         // simple timestamp check
-        if (!this.lastTime) this.lastTime = Date.now();
+        // simple timestamp check
+        if (!lastSolverTime) lastSolverTime = Date.now();
         let now = Date.now();
         let delay = (6 - speedVal) * 50; // 50ms to 250ms delay
 
-        if (now - this.lastTime < delay) {
+        if (now - lastSolverTime < delay) {
             animationFrameId = requestAnimationFrame(() => animateSolver(algo, end));
             return;
         }
-        this.lastTime = now;
+        lastSolverTime = now;
     } else {
         // Fast
         stepsPerFrame = Math.max(1, (speedVal - 5) * 2);
