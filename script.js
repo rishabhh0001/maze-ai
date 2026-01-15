@@ -45,6 +45,7 @@ let solverCameFrom = new Map(); // For path reconstruction
 let solvedPath = [];
 let animationFrameId;
 let steps = 0;
+let lastSolverTime = 0; // Fix for timing simulation
 
 class Cell {
     constructor(i, j) {
